@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #F0F9FA;
+    color: #0F172A;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(15, 118, 110, 0.04) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(37, 99, 235, 0.03) 0px, transparent 45%),
+      radial-gradient(at 50% 100%, rgba(124, 58, 237, 0.02) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display tracking-tight text-slate-900;
+  }
+}
+
+/* Custom Medical & Healthcare UI Design System */
+.glass-panel {
+  background: #FFFFFF;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.05), 0 2px 6px -2px rgba(15, 23, 42, 0.03);
+  transition: all 0.2s ease-in-out;
+}
+
+.glass-panel:hover {
+  border-color: rgba(203, 213, 225, 1);
+}
+
+.glass-panel-glow {
+  background: linear-gradient(135deg, #0F766E 0%, #115E59 50%, #0F172A 100%);
+  color: #FFFFFF;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+  box-shadow: 0 10px 30px -5px rgba(15, 118, 110, 0.25), 0 4px 12px -2px rgba(0, 0, 0, 0.08);
+}
+
+.glass-panel-ai {
+  background: linear-gradient(135deg, #FFFFFF 0%, #F8FAFC 60%, #F5F3FF 100%);
+  border: 1px solid rgba(196, 181, 253, 0.6);
+  box-shadow: 0 8px 25px -4px rgba(124, 58, 237, 0.08), 0 2px 6px -2px rgba(37, 99, 235, 0.04);
+}
+
+.glass-input {
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #0F172A;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass-input:focus {
+  border-color: #0F766E;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+  outline: none;
+}
+.glass-input::placeholder {
+  color: #94A3B8;
+}
+
+/* Touch-optimized, accessible action buttons */
+.btn-primary-large {
+  @apply inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl font-bold text-base text-white bg-gradient-to-r from-teal-700 via-teal-700 to-teal-800 hover:from-teal-800 hover:to-teal-900 active:scale-[0.98] shadow-md shadow-teal-900/20 hover:shadow-lg hover:shadow-teal-900/25 transition-all duration-200 cursor-pointer;
+}
+
+.btn-secondary-large {
+  @apply inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl font-bold text-base text-slate-700 bg-white hover:bg-slate-50 hover:text-slate-900 border border-slate-300 active:scale-[0.98] shadow-sm hover:shadow transition-all duration-200 cursor-pointer;
+}
+
+.btn-ai-large {
+  @apply inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl font-bold text-base text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 active:scale-[0.98] shadow-md shadow-indigo-950/20 hover:shadow-lg hover:shadow-indigo-950/30 transition-all duration-200 cursor-pointer;
+}
+
+.btn-danger-large {
+  @apply inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl font-bold text-base text-white bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 active:scale-[0.98] shadow-md shadow-red-900/20 hover:shadow-lg hover:shadow-red-900/25 transition-all duration-200 cursor-pointer;
+}
+
+/* Subtle Medical Grid Watermark pattern */
+.bg-medical-grid {
+  background-size: 24px 24px;
+  background-image: 
+    linear-gradient(to right, rgba(15, 118, 110, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 118, 110, 0.04) 1px, transparent 1px);
+}
+
+/* AI Neural Accent Glow */
+.ai-glow {
+  box-shadow: 0 0 20px -3px rgba(124, 58, 237, 0.25);
+}
+
+/* Custom Clean Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #0F766E;
+}
+
+/* Print styles for official clinical referral slips */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .glass-panel, .glass-panel-glow, .glass-panel-ai {
+    background: white !important;
+    color: black !important;
+    border: 1px solid #ddd !important;
+    box-shadow: none !important;
+  }
+}
