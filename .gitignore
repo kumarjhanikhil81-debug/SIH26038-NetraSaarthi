@@ -1,4 +1,41 @@
+# Python
+*.py[cod]
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+__pycache__/
+**/__pycache__/
+
+# Frontend
 node_modules/
-.env
+frontend/node_modules/
 dist/
+frontend/dist/
 build/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Large datasets & patient data
+data/train_images/
+data/train.csv
+data/val.csv
+data/*.zip
+data/*.tar.gz
+
+# Uploaded/generated files
+backend/static/uploads/*
+!backend/static/uploads/.gitkeep
+backend/static/heatmaps/*
+!backend/static/heatmaps/.gitkeep
+
+# Local databases
+*.db
+*.sqlite3
+
+# Local backups / temporary files
+netrasaarthi_old_backup/
+scratch/

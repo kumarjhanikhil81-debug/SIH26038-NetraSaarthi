@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="128" fill="#0f766e" />
+  <circle cx="256" cy="256" r="160" stroke="#5eead4" stroke-width="24" stroke-opacity="0.4" />
+  <circle cx="256" cy="256" r="100" stroke="#ffffff" stroke-width="28" />
+  <circle cx="256" cy="256" r="36" fill="#14b8a6" />
+  <!-- Retinal Laser Crosshairs -->
+  <line x1="256" y1="56" x2="256" y2="120" stroke="#2dd4bf" stroke-width="24" stroke-linecap="round" />
+  <line x1="256" y1="392" x2="256" y2="456" stroke="#2dd4bf" stroke-width="24" stroke-linecap="round" />
+  <line x1="56" y1="256" x2="120" y2="256" stroke="#2dd4bf" stroke-width="24" stroke-linecap="round" />
+  <line x1="392" y1="256" x2="456" y2="256" stroke="#2dd4bf" stroke-width="24" stroke-linecap="round" />
+  <!-- Sparkle Diagnostic Accent -->
+  <path d="M380 110L392 138L420 150L392 162L380 190L368 162L340 150L368 138Z" fill="#fef08a" />
+</svg>
