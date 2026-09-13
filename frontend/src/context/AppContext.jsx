@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { INITIAL_PATIENTS, CLINICAL_SAMPLE_CASES, HEALTH_CENTRE_INFO } from '../data/mockData';
 import { patientsApi, screeningApi, doctorsApi, systemApi } from '../services/api';
+import { evaluateClientFundusQuality, analyzeClientRetinalBiomarkers } from '../utils/qualityCheck';
 
 const AppContext = createContext();
 
@@ -130,9 +131,49 @@ export function AppProvider({ children }) {
     }
   }, [selectedPatient]);
 
+  // Resilient background health-check poller: automatically detects when FastAPI comes online
   useEffect(() => {
+    let isMounted = true;
+
+    const checkConnectivity = async () => {
+      try {
+        await systemApi.checkHealth();
+        if (!isMounted) return;
+        setIsBackendConnected(true);
+        setIsOnline(true);
+      } catch (e) {
+        if (!isMounted) return;
+        setIsBackendConnected(false);
+      }
+    };
+
+    // Initial check
     refreshPatientsFromBackend();
-  }, []);
+
+    // Heartbeat: check every 5s if disconnected, every 25s if connected
+    const interval = setInterval(() => {
+      checkConnectivity();
+    }, isBackendConnected ? 25000 : 5000);
+
+    const onFocus = () => checkConnectivity();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', checkConnectivity);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', checkConnectivity);
+    };
+  }, [refreshPatientsFromBackend, isBackendConnected]);
+
+  // Auto-sync offline screenings as soon as backend becomes connected
+  useEffect(() => {
+    if (isBackendConnected && offlineScreenings.length > 0 && !isSyncing) {
+      console.log(`[Auto-Sync] FastAPI backend detected online. Automatically synchronizing ${offlineScreenings.length} pending record(s)...`);
+      syncOfflineScans();
+    }
+  }, [isBackendConnected, offlineScreenings.length, isSyncing]);
 
   // Persist patients to localStorage for offline resilience
   useEffect(() => {
@@ -217,7 +258,6 @@ export function AppProvider({ children }) {
         backendScreeningId: null
       }));
 
-      setPendingSyncCount(c => c + 1);
       setIsLoading(false);
       return patientRecord;
     }
@@ -246,64 +286,78 @@ export function AppProvider({ children }) {
   };
 
   /**
-   * Submit screening to FastAPI backend (POST /screenings) or store offline
+   * Submit screening to FastAPI backend (POST /screenings/analyze-upload) or store offline
    */
-  const submitScreeningToBackend = async () => {
-    const currentPatient = screeningSession.patient || selectedPatient || (patients && patients.length > 0 ? patients[0] : { id: 1, name: 'Default Patient', custom_id: 'PAT-2026-001' });
-    const eyeScanned = screeningSession.eye === 'OD' ? 'OD (Right Eye)' : screeningSession.eye === 'OS' ? 'OS (Left Eye)' : 'Both Eyes';
+  const submitScreeningToBackend = async (sessionOverride = null) => {
+    const session = sessionOverride ? { ...screeningSession, ...sessionOverride } : screeningSession;
+    const currentPatient = session.patient || selectedPatient || (patients && patients.length > 0 ? patients[0] : { id: 1, name: 'Default Patient', custom_id: 'PAT-2026-001' });
+    const eyeScanned = session.eye === 'OD' ? 'OD (Right Eye)' : session.eye === 'OS' ? 'OS (Left Eye)' : 'Both Eyes';
 
     // 1. If Internet is ON, attempt FastAPI backend sync
     if (isOnline) {
       try {
-        // Only pass target_grade if explicitly using a preset sample case without a custom upload!
-        const isPreset = !screeningSession.uploadedFile && !screeningSession.uploadedImageUrl?.startsWith('data:') && screeningSession.caseData?.predictedGrade !== undefined;
-        const targetGrade = isPreset ? screeningSession.caseData.predictedGrade : undefined;
+        let response = null;
 
-        const response = await screeningApi.create({
-          patient_id: currentPatient.id,
-          eye_scanned: eyeScanned,
-          image_url: screeningSession.uploadedImageUrl,
-          notes: screeningSession.uploadedFile?.name ? `${screeningSession.uploadedFile.name} - AI session` : `AI screening session for ${currentPatient.name || currentPatient.custom_id}`,
-          target_grade: targetGrade
-        });
+        // PATH A: Real uploaded fundus image file -> run direct analyze-upload pipeline!
+        if (session.uploadedFile) {
+          response = await screeningApi.analyzeUpload({
+            patientId: currentPatient.id,
+            patientCustomId: currentPatient.custom_id,
+            eyeScanned: eyeScanned,
+            imageFile: session.uploadedFile,
+            notes: session.uploadedFile.name ? `${session.uploadedFile.name} - Deep AI session` : 'Retinal fundus AI screening session'
+          });
+        } else {
+          // PATH B: Preset clinical sample case without custom file
+          const isPreset = !session.uploadedImageUrl?.startsWith('data:') && session.caseData?.predictedGrade !== undefined;
+          const targetGrade = isPreset ? session.caseData.predictedGrade : undefined;
+
+          response = await screeningApi.create({
+            patient_id: currentPatient.id,
+            eye_scanned: eyeScanned,
+            image_url: session.uploadedImageUrl,
+            notes: session.caseData?.title ? `Clinical Preset: ${session.caseData.title}` : `AI screening session for ${currentPatient.name || currentPatient.custom_id}`,
+            target_grade: targetGrade
+          });
+        }
 
         if (response) {
-          let pred = response.prediction;
-
-          // If a custom image file was uploaded, trigger the /analyze endpoint to run PyTorch + GradCAM
-          if (screeningSession.uploadedFile && response.id) {
-            try {
-              const analyzeRes = await screeningApi.analyze(response.id, screeningSession.uploadedFile);
-              if (analyzeRes && analyzeRes.predicted_class !== undefined && analyzeRes.predicted_class !== null) {
-                // Fetch the updated screening with full prediction details
-                const updatedScreening = await screeningApi.getById(response.id);
-                if (updatedScreening && updatedScreening.prediction) {
-                  pred = updatedScreening.prediction;
-                }
-              }
-            } catch (analyzeErr) {
-              console.warn("Screening /analyze call encountered an issue, using initial prediction:", analyzeErr.message);
-            }
-          }
+          let pred = response.prediction || (response.predicted_class !== undefined ? response : null);
 
           if (pred) {
+            const predGrade = Number(pred.predicted_grade ?? pred.predicted_class ?? pred.prediction ?? 0);
+            const isInvalid = pred.quality_status === 'INVALID_IMAGE' || response.quality_status === 'INVALID_IMAGE' || response.status === 'INVALID_IMAGE' || response.status === 'Invalid Image' || pred.short_name?.toLowerCase().includes('not a retina');
+            const isRetake = pred.quality_status === 'RETAKE_REQUIRED' || response.quality_status === 'RETAKE_REQUIRED' || response.status === 'RETAKE_REQUIRED' || response.status === 'Retake Required' || pred.short_name?.toLowerCase().includes('not clear');
+            const confRaw = pred.confidence;
+            const scaledConfidence = (confRaw !== undefined && confRaw !== null)
+              ? (Number(confRaw) <= 1.0 && Number(confRaw) > 0 ? Math.round(Number(confRaw) * 1000) / 10 : Number(confRaw))
+              : 0;
+
             const resultPayload = {
-              grade: pred.predicted_grade,
-              gradeName: pred.grade_name,
-              confidence: pred.confidence,
-              qualityScore: pred.quality_score,
-              qualityStatus: pred.quality_status || 'GOOD',
-              riskCategory: pred.risk_category,
-              urgency: pred.urgency,
-              actionText: pred.action_text,
-              actionHindi: pred.action_hindi,
-              recommendation: pred.recommendation,
-              lesions: pred.lesions,
-              hotspots: pred.gradcam_hotspots,
-              heatmapUrl: pred.heatmap_url,
-              explanationType: pred.explanation_type,
+              grade: isInvalid ? 0 : isRetake ? 0 : predGrade,
+              gradeName: isInvalid ? "No Result as the Image is Not Valid" : isRetake ? "Retake Required (Image Not Clear)" : (pred.grade_name || DR_GRADES[predGrade]?.name || "Normal Retina"),
+              confidence: (isInvalid || isRetake) ? 0 : scaledConfidence,
+              qualityScore: pred.quality_score ?? (isInvalid ? 0 : 94),
+              qualityStatus: isInvalid ? 'INVALID_IMAGE' : isRetake ? 'RETAKE_REQUIRED' : (pred.quality_status || 'GOOD'),
+              qualityMessages: pred.quality_messages || response.quality_messages || [],
+              isInvalidImage: isInvalid,
+              isRetakeRequired: isRetake,
+              riskCategory: isInvalid ? 'Invalid' : isRetake ? 'Unclear' : (pred.risk_category || DR_GRADES[predGrade]?.riskCategory || 'Low'),
+              urgency: isInvalid ? 'Invalid' : isRetake ? 'Retake Required' : (pred.urgency || DR_GRADES[predGrade]?.urgency || 'Normal'),
+              actionText: isInvalid ? 'No result as the image is not valid' : isRetake ? 'Retake the image, it is not clear' : (pred.action_text || DR_GRADES[predGrade]?.actionText || 'Normal - Annual Review'),
+              actionHindi: isInvalid ? 'अमान्य फोटो: आंख के पर्दे की फोटो नहीं है' : isRetake ? 'दोबारा फोटो लें: फोटो साफ नहीं है' : (pred.action_hindi || DR_GRADES[predGrade]?.actionHindi || 'वार्षिक नियमित जांच'),
+              recommendation: isInvalid
+                ? (pred.recommendation || response.recommendation || 'No result as the image is not valid. The captured photograph is not a retinal fundus image. Please capture or upload a valid retinal scan.')
+                : isRetake
+                ? (pred.recommendation || response.recommendation || 'Retake the image, it is not clear. Image clarity is insufficient for automated diagnostic analysis. Please recapture ensuring proper illumination and focus.')
+                : (pred.recommendation || DR_GRADES[predGrade]?.recommendation || ''),
+              lesions: pred.lesions || {},
+              hotspots: pred.gradcam_hotspots || pred.hotspots || [],
+              heatmapUrl: pred.heatmap_url || response.heatmap_url,
+              imageUrl: response.image_url || session.uploadedImageUrl,
+              explanationType: pred.explanation_type || "AI Attention Visualization (Grad-CAM)",
               disclaimer: pred.disclaimer,
-              backendScreeningId: response.id,
+              backendScreeningId: response.id || response.screening_id,
               isOffline: false,
               syncStatus: 'synced',
             };
@@ -312,9 +366,9 @@ export function AppProvider({ children }) {
             setIsBackendConnected(true);
             setLastSyncNotification({
               type: 'online_success',
-              message: `Screening #${response.id} successfully recorded in Central SQLite Database.`
+              message: `Screening #${response.id || response.screening_id} successfully analyzed and saved.`
             });
-            return response;
+            return resultPayload;
           }
         }
       } catch (err) {
@@ -324,39 +378,122 @@ export function AppProvider({ children }) {
     }
 
     // 2. If Internet is OFF or Backend is unreachable:
-    // STORE SCREENING LOCALLY IN OFFLINE VAULT (No unnecessary personal PII stored)
-    let fallbackCase = screeningSession.caseData;
-    if (!fallbackCase && screeningSession.uploadedFile?.name) {
-      const fn = screeningSession.uploadedFile.name.toLowerCase();
-      if (fn.includes('mild') || fn.includes('grade 1') || fn.includes('grade1')) {
-        fallbackCase = CLINICAL_SAMPLE_CASES[1];
-      } else if (fn.includes('mod') || fn.includes('grade 2') || fn.includes('grade2')) {
-        fallbackCase = CLINICAL_SAMPLE_CASES[2];
-      } else if (fn.includes('sev') || fn.includes('grade 3') || fn.includes('grade3')) {
-        fallbackCase = CLINICAL_SAMPLE_CASES[3];
-      } else if (fn.includes('prolif') || fn.includes('prolefaritive') || fn.includes('pdr') || fn.includes('grade 4') || fn.includes('grade4')) {
-        fallbackCase = CLINICAL_SAMPLE_CASES[4];
+    // Run client-side retinal morphology & clarity verification and deep lesion extraction
+    const customImgSource = session.uploadedFile || session.uploadedImageUrl;
+    let resultPayload = null;
+
+    if (customImgSource) {
+      // Step A: Stage 1 & 2 Client Quality Verification Gate
+      const qEval = await evaluateClientFundusQuality(customImgSource);
+
+      if (!qEval.is_retina || qEval.quality_status === 'INVALID_IMAGE') {
+        resultPayload = {
+          grade: 0,
+          gradeName: "No Result as the Image is Not Valid",
+          confidence: 0,
+          qualityScore: 0,
+          qualityStatus: 'INVALID_IMAGE',
+          qualityMessages: qEval.quality_messages || ["The uploaded photograph is not a retinal fundus image."],
+          isInvalidImage: true,
+          isRetakeRequired: false,
+          riskCategory: 'Invalid',
+          urgency: 'Invalid',
+          actionText: 'No result as the image is not valid',
+          actionHindi: 'अमान्य फोटो: आंख के पर्दे की फोटो नहीं है',
+          recommendation: 'No result as the image is not valid. The captured photograph is not a retinal fundus image. Please capture or upload a valid retinal scan.',
+          lesions: {},
+          hotspots: [],
+          heatmapUrl: null,
+          backendScreeningId: null,
+          isOffline: true,
+          offlineId: `offline-${Date.now()}`,
+          syncStatus: 'failed_validation',
+        };
+      } else if (!qEval.is_clear || qEval.quality_status === 'RETAKE_REQUIRED') {
+        resultPayload = {
+          grade: 0,
+          gradeName: "Retake Required (Image Not Clear)",
+          confidence: 0,
+          qualityScore: qEval.quality_score || 45,
+          qualityStatus: 'RETAKE_REQUIRED',
+          qualityMessages: qEval.quality_messages || ["Image clarity is insufficient for automated diagnostic analysis."],
+          isInvalidImage: false,
+          isRetakeRequired: true,
+          riskCategory: 'Unclear',
+          urgency: 'Retake Required',
+          actionText: 'Retake the image, it is not clear',
+          actionHindi: 'दोबारा फोटो लें: फोटो साफ नहीं है',
+          recommendation: 'Retake the image, it is not clear. Image clarity is insufficient for automated diagnostic analysis. Please recapture ensuring proper illumination and focus.',
+          lesions: {},
+          hotspots: [],
+          heatmapUrl: null,
+          backendScreeningId: null,
+          isOffline: true,
+          offlineId: `offline-${Date.now()}`,
+          syncStatus: 'retake_needed',
+        };
       } else {
-        fallbackCase = CLINICAL_SAMPLE_CASES[0];
+        // Image is verified as retina AND is clear: run deep client biomarker analysis
+        const bio = await analyzeClientRetinalBiomarkers(customImgSource);
+        const actionTexts = [
+          "Routine Annual Eye Screening",
+          "Early Stage - Monitor in 6-9 Months",
+          "Ophthalmologist Referral within 30 Days",
+          "Urgent Hospital Referral (within 7-14 Days)",
+          "CRITICAL: Immediate Specialist Intervention"
+        ];
+        const actionHindis = [
+          "वार्षिक नियमित जांच",
+          "शुरुआती लक्षण - 6 महीने में जांच",
+          "30 दिनों के भीतर नेत्र विशेषज्ञ से मिलें",
+          "अति आवश्यक: 1-2 सप्ताह में अस्पताल जाएं",
+          "आपातकालीन: तुरंत विशेषज्ञ डॉक्टर से मिलें"
+        ];
+        const riskCategories = ["Low", "Moderate", "Elevated", "High", "Critical"];
+        const urgencies = ["Normal", "Medium", "High", "Critical", "Emergency"];
+
+        resultPayload = {
+          grade: bio.grade,
+          gradeName: bio.gradeName,
+          confidence: bio.confidence,
+          qualityScore: qEval.quality_score || 94,
+          qualityStatus: 'GOOD',
+          qualityMessages: qEval.quality_messages || [],
+          isInvalidImage: false,
+          isRetakeRequired: false,
+          riskCategory: riskCategories[bio.grade],
+          urgency: urgencies[bio.grade],
+          actionText: actionTexts[bio.grade],
+          actionHindi: actionHindis[bio.grade],
+          recommendation: `Automated retinal analysis detected ${bio.gradeName}. ${bio.grade > 1 ? 'Specialist evaluation recommended.' : 'Routine monitoring advised.'}`,
+          lesions: bio.lesions,
+          hotspots: bio.hotspots,
+          heatmapUrl: null,
+          backendScreeningId: null,
+          isOffline: true,
+          offlineId: `offline-${Date.now()}`,
+          syncStatus: 'pending',
+        };
       }
-    } else if (!fallbackCase) {
-      fallbackCase = CLINICAL_SAMPLE_CASES[0];
+    } else {
+      let fallbackCase = session.caseData || CLINICAL_SAMPLE_CASES[0];
+      resultPayload = {
+        grade: fallbackCase.predictedGrade,
+        gradeName: fallbackCase.title,
+        confidence: fallbackCase.confidence,
+        qualityScore: fallbackCase.qualityScore || 94,
+        qualityStatus: 'GOOD',
+        lesions: fallbackCase.lesions,
+        hotspots: fallbackCase.gradcamHotspots,
+        lesionMarkers: fallbackCase.lesionMarkers,
+        backendScreeningId: null,
+        isOffline: true,
+        offlineId: `offline-${Date.now()}`,
+        syncStatus: 'pending',
+      };
     }
-    const offlineId = `offline-${Date.now()}`;
-    const resultPayload = {
-      grade: fallbackCase.predictedGrade,
-      gradeName: fallbackCase.title,
-      confidence: fallbackCase.confidence,
-      qualityScore: fallbackCase.qualityScore || 94,
-      qualityStatus: 'GOOD',
-      lesions: fallbackCase.lesions,
-      hotspots: fallbackCase.gradcamHotspots,
-      lesionMarkers: fallbackCase.lesionMarkers,
-      backendScreeningId: null,
-      isOffline: true,
-      offlineId: offlineId,
-      syncStatus: 'pending',
-    };
+
+    const offlineId = resultPayload.offlineId || `offline-${Date.now()}`;
 
     // Store in offline queue without unnecessary personal information (PII)
     const offlineItem = {
@@ -364,9 +501,9 @@ export function AppProvider({ children }) {
       patient_id: currentPatient.id,
       patient_custom_id: currentPatient.custom_id || `PAT-${currentPatient.id}`,
       eye_scanned: eyeScanned,
-      image_url: screeningSession.uploadedImageUrl,
+      image_url: session.uploadedImageUrl,
       notes: `Offline screening record for patient reference ${currentPatient.custom_id || currentPatient.id}`,
-      target_grade: fallbackCase.predictedGrade,
+      target_grade: resultPayload.grade,
       result: resultPayload,
       timestamp: new Date().toISOString(),
     };

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Layers, Eye, Sliders, Sparkles, ZoomIn, ZoomOut, RotateCcw, AlertCircle, Info } from 'lucide-react';
 import { drawFundusOnCanvas, drawGradcamOnCanvas } from '../utils/retinaCanvas';
+import { getApiBaseUrl } from '../services/api';
 
 export default function RetinalVisualizer({
   grade = 2,
@@ -10,7 +11,8 @@ export default function RetinalVisualizer({
   qualityScore = 95,
   interactive = true,
   defaultMode = 'gradcam', // 'original' | 'gradcam' | 'redfree' | 'lesions'
-  customImageUrl = null
+  customImageUrl = null,
+  heatmapUrl = null,
 }) {
   const baseCanvasRef = useRef(null);
   const gradcamCanvasRef = useRef(null);
@@ -28,10 +30,13 @@ export default function RetinalVisualizer({
     
     if (baseCanvasRef.current) {
       if (customImageUrl && typeof customImageUrl === 'string') {
+        const fullCustomUrl = customImageUrl.startsWith('/static/')
+          ? `${getApiBaseUrl()}${customImageUrl}`
+          : customImageUrl;
         // Draw user uploaded image
         const ctx = baseCanvasRef.current.getContext('2d');
         const img = new Image();
-        if (!customImageUrl.startsWith('data:') && !customImageUrl.startsWith('blob:')) {
+        if (!fullCustomUrl.startsWith('data:') && !fullCustomUrl.startsWith('blob:')) {
           img.crossOrigin = 'anonymous';
         }
         img.onload = () => {
@@ -54,7 +59,7 @@ export default function RetinalVisualizer({
             isRedFree
           });
         };
-        img.src = customImageUrl;
+        img.src = fullCustomUrl;
       } else {
         drawFundusOnCanvas(baseCanvasRef.current, {
           grade,
@@ -67,9 +72,39 @@ export default function RetinalVisualizer({
     if (gradcamCanvasRef.current) {
       const showHeatmap = viewMode === 'gradcam' || (viewMode === 'original' && heatmapOpacity > 0);
       const effectiveOpacity = viewMode === 'gradcam' ? heatmapOpacity : 0;
-      drawGradcamOnCanvas(gradcamCanvasRef.current, hotspots, effectiveOpacity);
+
+      if (heatmapUrl && effectiveOpacity > 0) {
+        const fullHeatmapUrl = heatmapUrl.startsWith('/static/')
+          ? `${getApiBaseUrl()}${heatmapUrl}`
+          : heatmapUrl;
+        const gCtx = gradcamCanvasRef.current.getContext('2d');
+        const hImg = new Image();
+        if (!fullHeatmapUrl.startsWith('data:') && !fullHeatmapUrl.startsWith('blob:')) {
+          hImg.crossOrigin = 'anonymous';
+        }
+        hImg.onload = () => {
+          try {
+            gCtx.clearRect(0, 0, 400, 400);
+            gCtx.save();
+            gCtx.beginPath();
+            gCtx.arc(200, 200, 188, 0, Math.PI * 2);
+            gCtx.clip();
+            gCtx.globalAlpha = effectiveOpacity;
+            gCtx.drawImage(hImg, 0, 0, 400, 400);
+            gCtx.restore();
+          } catch (err) {
+            drawGradcamOnCanvas(gradcamCanvasRef.current, hotspots, effectiveOpacity);
+          }
+        };
+        hImg.onerror = () => {
+          drawGradcamOnCanvas(gradcamCanvasRef.current, hotspots, effectiveOpacity);
+        };
+        hImg.src = fullHeatmapUrl;
+      } else {
+        drawGradcamOnCanvas(gradcamCanvasRef.current, hotspots, effectiveOpacity);
+      }
     }
-  }, [grade, eye, viewMode, heatmapOpacity, hotspots, customImageUrl]);
+  }, [grade, eye, viewMode, heatmapOpacity, hotspots, customImageUrl, heatmapUrl]);
 
   return (
     <div className="flex flex-col items-center w-full max-w-xl mx-auto select-none">

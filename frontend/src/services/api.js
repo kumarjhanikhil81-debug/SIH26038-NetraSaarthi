@@ -3,14 +3,27 @@
  * Connects React Frontend to FastAPI Backend (SQLite)
  */
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+
+const CANDIDATE_URLS = [
+  import.meta.env.VITE_API_BASE_URL,
+  'http://127.0.0.1:8000',
+  'http://localhost:8000',
+].filter(Boolean).map(u => u.replace(/\/$/, ''));
+
+// Active base URL defaults to 127.0.0.1 (avoids Windows localhost IPv6 resolution lag)
+let activeApiBaseUrl = CANDIDATE_URLS[0] || API_BASE_URL;
+
+export function getApiBaseUrl() {
+  return activeApiBaseUrl || API_BASE_URL;
+}
 
 /**
- * Generic HTTP request wrapper with standardized error handling and response parsing
+ * Generic HTTP request wrapper with standardized error handling, host failover, and timeout
  */
 async function apiRequest(endpoint, options = {}) {
-  const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-  
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
   const headers = {
     'Accept': 'application/json',
     ...options.headers,
@@ -21,51 +34,85 @@ async function apiRequest(endpoint, options = {}) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const config = {
-    ...options,
-    headers,
+  // Helper to execute single request with timeout
+  const executeFetch = async (baseUrl) => {
+    const controller = new AbortController();
+    const timeoutMs = options.timeout || 10000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const config = {
+      ...options,
+      headers,
+      signal: controller.signal,
+    };
+
+    try {
+      const response = await fetch(`${baseUrl}${cleanEndpoint}`, config);
+      clearTimeout(timeoutId);
+      return response;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
   };
 
+  let response = null;
+  let lastError = null;
+
+  // Try current active baseUrl first
   try {
-    const response = await fetch(url, config);
-
-    // Parse JSON or text response
-    let data;
-    const contentType = response.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      data = await response.json();
-    } else {
-      data = await response.text();
-    }
-
-    if (!response.ok) {
-      let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
-      if (data && typeof data === 'object' && data.detail) {
-        if (Array.isArray(data.detail)) {
-          // Pydantic validation errors
-          errorMessage = data.detail.map(e => `${e.loc?.slice(1)?.join('.') || 'field'}: ${e.msg}`).join(', ');
-        } else {
-          errorMessage = data.detail;
-        }
+    response = await executeFetch(activeApiBaseUrl);
+  } catch (initialErr) {
+    lastError = initialErr;
+    // Attempt failover to candidate URLs if network/abort error
+    const fallbackUrls = CANDIDATE_URLS.filter(u => u !== activeApiBaseUrl);
+    for (const altUrl of fallbackUrls) {
+      try {
+        response = await executeFetch(altUrl);
+        activeApiBaseUrl = altUrl; // Cache the responsive host
+        lastError = null;
+        break;
+      } catch (altErr) {
+        lastError = altErr;
       }
-      const error = new Error(errorMessage);
-      error.status = response.status;
-      error.data = data;
-      throw error;
     }
+  }
 
-    return data;
-  } catch (error) {
-    if (error.name === 'TypeError' && error.message.includes('fetch')) {
-      // Network unreachable / CORS / Server offline
-      const networkError = new Error(
-        `Unable to reach NetraSaarthi backend at ${API_BASE_URL}. Ensure the FastAPI server is running (uvicorn backend.main:app --reload).`
-      );
-      networkError.isNetworkError = true;
-      throw networkError;
+  if (!response && lastError) {
+    const networkError = new Error(
+      `Unable to reach NetraSaarthi backend at ${activeApiBaseUrl}. (FastAPI server status: Offline/Unreachable).`
+    );
+    networkError.isNetworkError = true;
+    networkError.originalError = lastError;
+    throw networkError;
+  }
+
+  // Parse JSON or text response
+  let data;
+  const contentType = response.headers.get('content-type');
+  if (contentType && contentType.includes('application/json')) {
+    data = await response.json();
+  } else {
+    data = await response.text();
+  }
+
+  if (!response.ok) {
+    let errorMessage = `HTTP Error ${response.status}: ${response.statusText}`;
+    if (data && typeof data === 'object' && data.detail) {
+      if (Array.isArray(data.detail)) {
+        // Pydantic validation errors
+        errorMessage = data.detail.map(e => `${e.loc?.slice(1)?.join('.') || 'field'}: ${e.msg}`).join(', ');
+      } else {
+        errorMessage = data.detail;
+      }
     }
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    error.data = data;
     throw error;
   }
+
+  return data;
 }
 
 // ---------------------------------------------------------
@@ -226,6 +273,26 @@ export const screeningApi = {
     return await apiRequest('/screenings/analyze', {
       method: 'POST',
       body: formData,
+      timeout: 30000,
+    });
+  },
+
+  /**
+   * Directly analyze fundus image and create screening record in one step
+   * POST /screenings/analyze-upload
+   */
+  async analyzeUpload({ patientId, patientCustomId, eyeScanned, imageFile, notes }) {
+    const formData = new FormData();
+    if (patientId) formData.append('patient_id', patientId.toString());
+    if (patientCustomId) formData.append('patient_custom_id', patientCustomId);
+    if (eyeScanned) formData.append('eye_scanned', eyeScanned);
+    if (notes) formData.append('notes', notes);
+    formData.append('image', imageFile);
+
+    return await apiRequest('/screenings/analyze-upload', {
+      method: 'POST',
+      body: formData,
+      timeout: 30000,
     });
   },
 
@@ -241,6 +308,7 @@ export const screeningApi = {
     return await apiRequest('/screenings/quality-check', {
       method: 'POST',
       body: formData,
+      timeout: 15000,
     });
   },
 };

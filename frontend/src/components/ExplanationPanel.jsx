@@ -84,7 +84,7 @@ export default function ExplanationPanel({
               <div className="text-[10px] text-slate-500 font-medium">Early punctate focal dilations</div>
             </div>
             <span className="font-mono font-bold text-amber-700 text-sm px-2.5 py-1 rounded-xl bg-amber-50 border border-amber-200">
-              {lesions.microaneurysms ?? 0} found
+              {lesions?.microaneurysms ?? lesions?.micro_aneurysms ?? 0} found
             </span>
           </div>
 
@@ -95,7 +95,7 @@ export default function ExplanationPanel({
               <div className="text-[10px] text-slate-500 font-medium">Dot, blot & flame hemorrhages</div>
             </div>
             <span className="font-mono font-bold text-rose-700 text-sm px-2.5 py-1 rounded-xl bg-rose-50 border border-rose-200">
-              {lesions.hemorrhages ?? 0} found
+              {lesions?.hemorrhages ?? lesions?.intraretinal_hemorrhages ?? 0} found
             </span>
           </div>
 
@@ -106,7 +106,7 @@ export default function ExplanationPanel({
               <div className="text-[10px] text-slate-500 font-medium">Waxy circinate lipoprotein deposits</div>
             </div>
             <span className="font-mono font-bold text-yellow-700 text-sm px-2.5 py-1 rounded-xl bg-yellow-50 border border-yellow-200">
-              {lesions.hardExudates ?? 0} found
+              {lesions?.hardExudates ?? lesions?.hard_exudates ?? 0} found
             </span>
           </div>
 
@@ -117,7 +117,7 @@ export default function ExplanationPanel({
               <div className="text-[10px] text-slate-500 font-medium">Localized nerve fiber layer infarcts</div>
             </div>
             <span className="font-mono font-bold text-slate-700 text-sm px-2.5 py-1 rounded-xl bg-slate-200">
-              {lesions.cottonWoolSpots ?? 0} found
+              {lesions?.cottonWoolSpots ?? lesions?.cotton_wool_spots ?? 0} found
             </span>
           </div>
 
@@ -128,11 +128,11 @@ export default function ExplanationPanel({
               <div className="text-[10px] text-slate-500 font-medium">Abnormal fragile new vessel proliferation on disc/retina</div>
             </div>
             <span className={`font-mono font-bold text-xs px-3 py-1 rounded-xl ${
-              lesions.neovascularization
+              (Boolean(lesions?.neovascularization) && lesions?.neovascularization !== 0) || Boolean(lesions?.neovascularization_disc) || Boolean(lesions?.neovascularization_elsewhere)
                 ? 'bg-red-100 text-red-900 border border-red-300'
                 : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
             }`}>
-              {lesions.neovascularization ? 'Present (High Risk)' : 'Absent'}
+              {(Boolean(lesions?.neovascularization) && lesions?.neovascularization !== 0) || Boolean(lesions?.neovascularization_disc) || Boolean(lesions?.neovascularization_elsewhere) ? 'Present (High Risk)' : 'Absent'}
             </span>
           </div>
 

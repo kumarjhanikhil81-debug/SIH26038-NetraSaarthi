@@ -58,16 +58,50 @@ def is_retinal_fundus_image(img_np: np.ndarray) -> Dict[str, Any]:
 
     # Convert to grayscale for FOV boundary
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    fg_mask = gray > 15
-    fg_pixels_count = int(np.sum(fg_mask))
+    mean_all = float(np.mean(gray))
 
-    # Near total black image
-    if fg_pixels_count < 0.12 * h * w:
+    # Reject total dark / covered lens
+    if mean_all < 18.0:
         return {
             "is_retina": False,
             "confidence": 0.0,
-            "reason": "Image is almost completely dark; no illuminated ocular field detected.",
-            "metrics": {"illuminated_area_pct": round(fg_pixels_count / (h * w) * 100.0, 1)}
+            "is_dark": True,
+            "reason": f"Severe underexposure or camera lens obscured (mean brightness: {mean_all:.1f}/255).",
+            "metrics": {
+                "mean_r": round(float(np.mean(r)), 1),
+                "mean_g": round(float(np.mean(g)), 1),
+                "mean_b": round(float(np.mean(b)), 1),
+                "rb_ratio": 0.0,
+                "rg_ratio": 0.0,
+                "retina_color_ratio": 0.0,
+            }
+        }
+
+    # Reject blown-out white surfaces / documents
+    if mean_all > 235.0:
+        return {
+            "is_retina": False,
+            "confidence": 0.0,
+            "reason": f"Severe overexposure or white document/screen detected (mean brightness: {mean_all:.1f}/255).",
+            "metrics": {
+                "mean_r": round(float(np.mean(r)), 1),
+                "mean_g": round(float(np.mean(g)), 1),
+                "mean_b": round(float(np.mean(b)), 1),
+                "rb_ratio": 1.0,
+                "rg_ratio": 1.0,
+                "retina_color_ratio": 0.0,
+            }
+        }
+
+    fg_mask = gray > 15
+    fg_pixels_count = int(np.sum(fg_mask))
+
+    if fg_pixels_count < 0.15 * h * w:
+        return {
+            "is_retina": False,
+            "confidence": 0.0,
+            "reason": "Image lacks illuminated ocular field of view.",
+            "metrics": {"fg_fraction": round(fg_pixels_count / (h * w), 3)}
         }
 
     r_fg = r[fg_mask]
@@ -78,48 +112,71 @@ def is_retinal_fundus_image(img_np: np.ndarray) -> Dict[str, Any]:
     mean_g = float(np.mean(g_fg))
     mean_b = float(np.mean(b_fg))
 
-    # Metric 1: Red Dominance over Blue (Fundus reflects red/orange, absorbs blue)
+    # Metric 1: Red Dominance over Green and Blue (Fundus absorbs green/blue, strongly reflects red)
     rb_ratio = mean_r / (mean_b + 1e-4)
     rg_ratio = mean_r / (mean_g + 1e-4)
+    tot_fg = mean_r + mean_g + mean_b + 1e-4
+    blue_share = mean_b / tot_fg
 
     # Metric 2: Warm Retinal Hue Coverage in HSV space
-    # Retinal hues: warm red-orange-amber spectrum (Hue [0..28] or [162..180] in OpenCV 0-180 scale)
+    # Retinal hues: warm red-orange-amber spectrum (Hue [0..30] or [160..180] in OpenCV 0-180 scale)
     hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV)
     hue = hsv[:, :, 0]
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
 
     retina_color_mask = (
-        ((hue <= 28) | (hue >= 162)) &
-        (sat >= 30) &
+        ((hue <= 30) | (hue >= 160)) &
+        (sat >= 25) &
         (val >= 25) &
         fg_mask
     )
-    retina_color_ratio = float(np.sum(retina_color_mask)) / float(fg_pixels_count)
+    retina_color_ratio = float(np.sum(retina_color_mask)) / float(fg_pixels_count) if fg_pixels_count > 0 else 0.0
 
-    # Metric 3: Neutral Gray Check (Faces, office rooms, keyboards, text documents)
-    diff_rg = abs(mean_r - mean_g)
-    diff_rb = abs(mean_r - mean_b)
-    is_neutral = (diff_rg < 12 and diff_rb < 15)
+    # Metric 3: Ophthalmic Circular Aperture / Corner Darkness Check
+    c_sz = int(min(h, w) * 0.12)
+    corner_mask = np.zeros((h, w), dtype=bool)
+    corner_mask[:c_sz, :c_sz] = True
+    corner_mask[:c_sz, -c_sz:] = True
+    corner_mask[-c_sz:, :c_sz] = True
+    corner_mask[-c_sz:, -c_sz:] = True
+    corner_lum = float(np.mean(gray[corner_mask])) if np.sum(corner_mask) > 0 else 0.0
+    center_lum = float(np.mean(gray[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4])) if h >= 4 and w >= 4 else mean_all
 
     is_retina = True
     reasons = []
 
-    if rb_ratio < 1.15:
+    # Check A: Red must significantly exceed Green (choroidal hemoglobin reflection)
+    if rg_ratio < 1.30:
         is_retina = False
-        reasons.append(f"Chromatic profile lacks retinal red reflectance (Red/Blue ratio: {rb_ratio:.2f} < 1.15).")
+        reasons.append(f"Insufficient red-to-green ratio ({rg_ratio:.2f} < 1.30, not choroidal tissue).")
 
-    if retina_color_ratio < 0.35:
+    # Check B: Red must heavily exceed Blue (fundus absorbs blue)
+    if rb_ratio < 1.65:
         is_retina = False
-        reasons.append(f"Warm retinal pigment coverage is only {retina_color_ratio * 100.0:.1f}% (minimum 35% required).")
+        reasons.append(f"Chromatic profile lacks retinal red reflectance (Red/Blue ratio: {rb_ratio:.2f} < 1.65).")
 
-    if is_neutral:
+    # Check C: Blue share must be low (< 22%)
+    if blue_share > 0.22:
+        is_retina = False
+        reasons.append(f"Excessive blue spectrum ({blue_share * 100.0:.1f}% > 22%, room/screen lighting).")
+
+    # Check D: Warm retinal pigment coverage
+    if retina_color_ratio < 0.40:
+        is_retina = False
+        reasons.append(f"Warm retinal pigment coverage is only {retina_color_ratio * 100.0:.1f}% (minimum 40% required).")
+
+    # Check E: Neutral Gray Check (Faces, office rooms, keyboards, text documents)
+    diff_rg = abs(mean_r - mean_g)
+    diff_rb = abs(mean_r - mean_b)
+    if diff_rg < 12 and diff_rb < 16:
         is_retina = False
         reasons.append("Image exhibits neutral/grayscale tones characteristic of an office or room environment.")
 
-    if mean_r < 35 and mean_g < 30 and mean_b < 25:
+    # Check F: Circular ophthalmic aperture check
+    if corner_lum > 70.0 and corner_lum > 0.70 * center_lum:
         is_retina = False
-        reasons.append("Field illumination is too dark to resolve retinal microvasculature.")
+        reasons.append(f"Image lacks circular ophthalmic aperture (bright illuminated corners: {corner_lum:.1f}).")
 
     metrics = {
         "mean_r": round(mean_r, 1),
@@ -127,7 +184,9 @@ def is_retinal_fundus_image(img_np: np.ndarray) -> Dict[str, Any]:
         "mean_b": round(mean_b, 1),
         "rb_ratio": round(rb_ratio, 2),
         "rg_ratio": round(rg_ratio, 2),
+        "blue_share": round(blue_share, 3),
         "retina_color_ratio": round(retina_color_ratio, 3),
+        "corner_lum": round(corner_lum, 1),
     }
 
     if is_retina:
@@ -224,22 +283,26 @@ def evaluate_fundus_quality(
     messages.append(res_msg)
 
     # Heuristic 2: Brightness / Illumination (Max 25 pts)
-    mean_lum = float(np.mean(retina_pixels))
-    clip_high_pct = float(np.mean(retina_pixels > 248) * 100.0)
+    if len(retina_pixels) > 0:
+        mean_lum = float(np.mean(retina_pixels))
+        clip_high_pct = float(np.mean(retina_pixels > 248) * 100.0)
+    else:
+        mean_lum = 0.0
+        clip_high_pct = 0.0
 
-    if mean_lum < 30.0:
+    if mean_lum < 28.0:
         bright_score = 5.0
         bright_msg = f"Severe underexposure (mean brightness: {mean_lum:.1f}/255). Retinal structures are obscured in dark shadows."
         is_retake = True
-    elif mean_lum < 45.0:
+    elif mean_lum < 40.0:
         bright_score = 14.0
         bright_msg = f"Sub-optimal illumination (mean brightness: {mean_lum:.1f}/255). Retinal fundus is too dark."
         is_retake = True
-    elif mean_lum > 225.0 or clip_high_pct > 30.0:
+    elif mean_lum > 230.0 or clip_high_pct > 35.0:
         bright_score = 5.0
         bright_msg = f"Severe overexposure / flash glare (mean: {mean_lum:.1f}/255, {clip_high_pct:.1f}% washed out). Retinal detail is obscured."
         is_retake = True
-    elif mean_lum > 200.0 or clip_high_pct > 15.0:
+    elif mean_lum > 210.0 or clip_high_pct > 18.0:
         bright_score = 16.0
         bright_msg = f"Moderate glare / high brightness (mean: {mean_lum:.1f}/255). Some retinal areas may be washed out."
     else:
@@ -248,15 +311,15 @@ def evaluate_fundus_quality(
     messages.append(bright_msg)
 
     # Heuristic 3: Contrast / Dynamic Range (Max 25 pts)
-    std_contrast = float(np.std(retina_pixels))
-    if std_contrast < 10.0:
+    std_contrast = float(np.std(retina_pixels)) if len(retina_pixels) > 1 else 0.0
+    if std_contrast < 9.0:
         contrast_score = 5.0
         contrast_msg = f"Extremely low contrast (std dev: {std_contrast:.1f}). Insufficient dynamic range to distinguish hemorrhages or exudates."
         is_retake = True
-    elif std_contrast < 16.0:
+    elif std_contrast < 15.0:
         contrast_score = 16.0
         contrast_msg = f"Borderline contrast (std dev: {std_contrast:.1f}). Subtle microaneurysms may be difficult to differentiate."
-    elif std_contrast < 25.0:
+    elif std_contrast < 24.0:
         contrast_score = 21.0
         contrast_msg = f"Adequate retinal contrast (std dev: {std_contrast:.1f})."
     else:
@@ -266,16 +329,16 @@ def evaluate_fundus_quality(
 
     # Heuristic 4: Blur / Focus Sharpness (Max 25 pts)
     laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    if laplacian_var < 20.0:
+    if laplacian_var < 18.0:
         blur_score = 4.0
         blur_msg = f"Severe motion blur or optical defocus detected (focus score: {laplacian_var:.1f}). Retinal vessels are blurry."
         is_retake = True
-    elif laplacian_var < 35.0:
+    elif laplacian_var < 30.0:
         blur_score = 14.0
         blur_msg = f"Soft or slightly blurred focus (focus score: {laplacian_var:.1f}). Borderline sharpness for micro-lesion detection."
-        if std_contrast < 15.0 or mean_lum < 40.0:
+        if std_contrast < 14.0 or mean_lum < 35.0:
             is_retake = True
-    elif laplacian_var < 70.0:
+    elif laplacian_var < 65.0:
         blur_score = 20.0
         blur_msg = f"Acceptable focus sharpness (focus score: {laplacian_var:.1f}). Retinal arcade vessels are identifiable."
     else:
@@ -286,7 +349,7 @@ def evaluate_fundus_quality(
     total_score = round(float(res_score + bright_score + contrast_score + blur_score), 1)
     total_score = max(0.0, min(100.0, total_score))
 
-    if total_score < 60.0:
+    if total_score < 55.0:
         is_retake = True
 
     if is_retake:
@@ -299,9 +362,10 @@ def evaluate_fundus_quality(
     return {
         "quality_score": total_score,
         "quality_status": final_status,
+        "status_message": status_msg,
         "is_retina": True,
         "is_clear": not is_retake,
-        "quality_messages": [status_msg] + messages,
+        "quality_messages": messages,
         "metrics": {
             "resolution": {"width": width, "height": height, "score": res_score},
             "brightness": {"mean_luminance": round(mean_lum, 2), "clip_high_pct": round(clip_high_pct, 2), "score": bright_score},

@@ -12,7 +12,8 @@ import {
  * destination facility, and triggers official referral slip generation.
  */
 export default function ReferralCard({
-  stateKey = 'SEVERE_DR',
+  stateKey = 'NO_DR',
+  grade = null,
   onPrintSlip,
   onRequestTeleReview,
   className = ''
@@ -66,10 +67,36 @@ export default function ReferralCard({
       destination: "Nearest Community Health Centre (CHC) Eye Care Unit",
       directive: "Image quality prevented automated AI classification. Re-capture image after pupil dilation or refer for manual indirect ophthalmoscopy.",
       requiresImmediateAction: false
+    },
+    INVALID_IMAGE: {
+      urgency: "Invalid Image: Retinal Scan Required",
+      badgeColor: "bg-rose-50 text-rose-800 border-rose-300",
+      timeframe: "Immediate recapture required",
+      destination: "Primary Health Centre / Screening Unit",
+      directive: "No result as the image is not valid. The captured photograph is not a retinal fundus image. Please take or upload a valid retinal scan.",
+      requiresImmediateAction: false
+    },
+    RETAKE_REQUIRED: {
+      urgency: "Image Not Clear: Retake Required",
+      badgeColor: "bg-amber-50 text-amber-800 border-amber-300",
+      timeframe: "Immediate recapture required",
+      destination: "Primary Health Centre / Screening Unit",
+      directive: "Retake the image, it is not clear. Ensure steady patient fixation, correct camera focus, and adequate illumination.",
+      requiresImmediateAction: false
     }
   };
 
-  const protocol = protocols[stateKey] || protocols.SEVERE_DR;
+  let effectiveKey = stateKey;
+  if (stateKey !== 'INVALID_IMAGE' && stateKey !== 'RETAKE_REQUIRED' && stateKey !== 'UNDETERMINED' && grade !== null && grade !== undefined) {
+    const num = Number(grade);
+    if (num === 0) effectiveKey = 'NO_DR';
+    else if (num === 1) effectiveKey = 'MILD_DR';
+    else if (num === 2) effectiveKey = 'MODERATE_DR';
+    else if (num === 3) effectiveKey = 'SEVERE_DR';
+    else if (num === 4) effectiveKey = 'PROLIFERATIVE_DR';
+  }
+
+  const protocol = protocols[effectiveKey] || protocols[stateKey] || protocols.NO_DR;
 
   return (
     <div className={`bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-card space-y-5 ${className}`}>

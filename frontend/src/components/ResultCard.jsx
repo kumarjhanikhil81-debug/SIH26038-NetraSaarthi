@@ -16,7 +16,8 @@ import {
  * doctor review status, and non-definitive clinical decision support notice.
  */
 export default function ResultCard({
-  stateKey = 'SEVERE_DR', // 'NO_DR' | 'MILD_DR' | 'MODERATE_DR' | 'SEVERE_DR' | 'PROLIFERATIVE_DR' | 'UNDETERMINED'
+  stateKey = 'NO_DR', // 'NO_DR' | 'MILD_DR' | 'MODERATE_DR' | 'SEVERE_DR' | 'PROLIFERATIVE_DR' | 'UNDETERMINED' | 'INVALID_IMAGE' | 'RETAKE_REQUIRED'
+  grade = null,
   confidence = 95.8,
   doctorReviewStatus = 'Specialist Review Recommended',
   eye = 'OD',
@@ -102,7 +103,7 @@ export default function ResultCard({
       icon: HelpCircle
     },
     RETAKE_REQUIRED: {
-      title: "Retake the image: it is not clear",
+      title: "Retake the image, it is not clear",
       subtitle: "Optical Defocus, Motion Blur, or Poor Illumination",
       badge: "Retake Required",
       gradient: "from-amber-950 via-orange-900 to-slate-950",
@@ -114,7 +115,17 @@ export default function ResultCard({
     }
   };
 
-  const current = severityStates[stateKey] || severityStates.SEVERE_DR;
+  let effectiveKey = stateKey;
+  if (stateKey !== 'INVALID_IMAGE' && stateKey !== 'RETAKE_REQUIRED' && stateKey !== 'UNDETERMINED' && grade !== null && grade !== undefined) {
+    const num = Number(grade);
+    if (num === 0) effectiveKey = 'NO_DR';
+    else if (num === 1) effectiveKey = 'MILD_DR';
+    else if (num === 2) effectiveKey = 'MODERATE_DR';
+    else if (num === 3) effectiveKey = 'SEVERE_DR';
+    else if (num === 4) effectiveKey = 'PROLIFERATIVE_DR';
+  }
+
+  const current = severityStates[effectiveKey] || severityStates[stateKey] || severityStates.NO_DR;
   const StateIcon = current.icon;
 
   return (

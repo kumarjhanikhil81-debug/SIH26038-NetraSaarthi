@@ -19,6 +19,7 @@ export default function ImageComparison({
   lesionMarkers = [],
   qualityScore = 94,
   customImageUrl = null,
+  heatmapUrl = null,
   className = ''
 }) {
   const [viewMode, setViewMode] = useState('blend'); // 'blend' | 'side-by-side'
@@ -78,6 +79,7 @@ export default function ImageComparison({
             interactive={true}
             defaultMode="gradcam"
             customImageUrl={customImageUrl}
+            heatmapUrl={heatmapUrl}
           />
         </div>
       )}
@@ -134,6 +136,7 @@ export default function ImageComparison({
                 interactive={false}
                 defaultMode="gradcam"
                 customImageUrl={customImageUrl}
+                heatmapUrl={heatmapUrl}
               />
 
               <p className="text-[11px] text-purple-900 text-center font-semibold">

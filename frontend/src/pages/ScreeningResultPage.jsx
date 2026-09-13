@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { 
   Printer, 
   ArrowLeft, 
@@ -12,7 +12,8 @@ import {
   Send,
   Wifi,
   WifiOff,
-  RefreshCw
+  RefreshCw,
+  RotateCcw
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { DR_GRADES, CLINICAL_SAMPLE_CASES } from '../data/mockData';
@@ -29,6 +30,7 @@ import MedicalDisclaimer from '../components/MedicalDisclaimer';
 
 export default function ScreeningResultPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { 
     screeningSession, 
     language,
@@ -42,8 +44,8 @@ export default function ScreeningResultPage() {
   const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
   const [teleReviewRequested, setTeleReviewRequested] = useState(false);
 
-  // Active screening parameters from session
-  const rawResult = screeningSession.result || {
+  // Active screening parameters from navigation state or session
+  const rawResult = location.state?.result || screeningSession.result || {
     grade: screeningSession.caseData?.predictedGrade ?? 0,
     confidence: screeningSession.caseData?.confidence ?? 95.8,
     lesions: screeningSession.caseData?.lesions ?? CLINICAL_SAMPLE_CASES[0].lesions,
@@ -57,13 +59,26 @@ export default function ScreeningResultPage() {
 
   // Map numerical grade (0-4) or quality gate status to stateKey for ResultCard & ReferralCard
   const mapGradeToStateKey = (grade) => {
-    if (rawResult.qualityStatus === 'INVALID_IMAGE' || rawResult.actionText?.toLowerCase().includes('not valid')) {
+    if (
+      rawResult.isInvalidImage ||
+      rawResult.qualityStatus === 'INVALID_IMAGE' ||
+      rawResult.actionText?.toLowerCase().includes('not valid') ||
+      rawResult.gradeName?.toLowerCase().includes('not valid') ||
+      rawResult.status?.toLowerCase().includes('invalid')
+    ) {
       return 'INVALID_IMAGE';
     }
-    if (rawResult.qualityStatus === 'RETAKE_REQUIRED' || rawResult.actionText?.toLowerCase().includes('not clear')) {
+    if (
+      rawResult.isRetakeRequired ||
+      rawResult.qualityStatus === 'RETAKE_REQUIRED' ||
+      rawResult.actionText?.toLowerCase().includes('not clear') ||
+      rawResult.gradeName?.toLowerCase().includes('not clear') ||
+      rawResult.status?.toLowerCase().includes('retake')
+    ) {
       return 'RETAKE_REQUIRED';
     }
-    switch (grade) {
+    const numGrade = Number(grade);
+    switch (numGrade) {
       case 0: return 'NO_DR';
       case 1: return 'MILD_DR';
       case 2: return 'MODERATE_DR';
@@ -201,14 +216,25 @@ export default function ScreeningResultPage() {
 
   const baseStateData = getStateParameters(activeStateKey);
   const isViewingOriginalResult = activeStateKey === mapGradeToStateKey(rawResult.grade);
+  const effectiveGrade = isViewingOriginalResult
+    ? (rawResult.grade !== undefined && rawResult.grade !== null ? Number(rawResult.grade) : baseStateData.grade)
+    : baseStateData.grade;
+
   const stateData = isViewingOriginalResult ? {
     ...baseStateData,
-    confidence: rawResult.confidence || baseStateData.confidence,
+    grade: effectiveGrade,
+    confidence: rawResult.confidence !== undefined && rawResult.confidence !== null ? rawResult.confidence : baseStateData.confidence,
     lesions: rawResult.lesions && Object.keys(rawResult.lesions).length > 0 ? rawResult.lesions : baseStateData.lesions,
     hotspots: rawResult.hotspots && rawResult.hotspots.length > 0 ? rawResult.hotspots : baseStateData.hotspots,
-    quality: rawResult.qualityScore || baseStateData.quality,
-    explanation: rawResult.recommendation || baseStateData.explanation
-  } : baseStateData;
+    quality: rawResult.qualityScore !== undefined && rawResult.qualityScore !== null ? rawResult.qualityScore : baseStateData.quality,
+    explanation: rawResult.recommendation || baseStateData.explanation,
+    imageUrl: rawResult.imageUrl || rawResult.image_url || screeningSession.uploadedImageUrl,
+    heatmapUrl: rawResult.heatmapUrl || rawResult.heatmap_url
+  } : {
+    ...baseStateData,
+    imageUrl: rawResult.imageUrl || rawResult.image_url || screeningSession.uploadedImageUrl,
+    heatmapUrl: rawResult.heatmapUrl || rawResult.heatmap_url
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -249,6 +275,8 @@ export default function ScreeningResultPage() {
             <option value="SEVERE_DR">Possible Severe DR (Grade 3)</option>
             <option value="PROLIFERATIVE_DR">Possible Proliferative DR (Grade 4)</option>
             <option value="UNDETERMINED">Unable to determine / low confidence</option>
+            <option value="INVALID_IMAGE">Invalid Image (Non-Retinal)</option>
+            <option value="RETAKE_REQUIRED">Retake Required (Image Not Clear)</option>
           </select>
         </div>
       </div>
@@ -343,11 +371,42 @@ export default function ScreeningResultPage() {
 
       {/* 1. Primary ResultCard Component (Displays Status, Predicted DR Severity, Confidence, & Doctor Review Status) */}
       <ResultCard 
+        grade={stateData.grade}
         stateKey={activeStateKey}
         confidence={stateData.confidence}
         eye={activeEye}
         doctorReviewStatus={teleReviewRequested ? 'Tele-Consultation Dispatched' : 'Specialist Review Recommended'}
       />
+
+      {/* Quality Gate Action Callout for Invalid or Retake Required States */}
+      {(activeStateKey === 'INVALID_IMAGE' || activeStateKey === 'RETAKE_REQUIRED') && (
+        <div className={`p-5 rounded-3xl border flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm animate-fade-in ${
+          activeStateKey === 'INVALID_IMAGE'
+            ? 'bg-rose-50 border-rose-200 text-rose-950'
+            : 'bg-amber-50 border-amber-200 text-amber-950'
+        }`}>
+          <div className="space-y-1 text-center sm:text-left">
+            <h4 className="font-bold text-sm flex items-center justify-center sm:justify-start gap-2">
+              <RotateCcw className="w-4 h-4" />
+              <span>{activeStateKey === 'INVALID_IMAGE' ? 'Image Rejected by Quality Gate' : 'Image Clarity Gate Alert'}</span>
+            </h4>
+            <p className="text-xs opacity-90 max-w-xl leading-relaxed">
+              {activeStateKey === 'INVALID_IMAGE'
+                ? 'The uploaded photo was flagged as non-retinal. Please upload a genuine human retinal fundus photograph to perform automated diabetic retinopathy screening.'
+                : 'Defocus, motion blur, or sub-optimal illumination was detected. Recapturing a sharp fundus photo ensures high diagnostic accuracy and clinical safety.'}
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/fundus-upload')}
+            className={`px-5 py-3 rounded-2xl text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer flex-shrink-0 w-full sm:w-auto ${
+              activeStateKey === 'INVALID_IMAGE' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-amber-600 hover:bg-amber-700'
+            }`}
+          >
+            <RotateCcw className="w-4 h-4" />
+            <span>{activeStateKey === 'INVALID_IMAGE' ? 'Re-upload Retina Photograph' : 'Retake Fundus Photo'}</span>
+          </button>
+        </div>
+      )}
 
       {/* Voice Guide Audio Counseling */}
       <VoiceGuide 
@@ -377,7 +436,8 @@ export default function ScreeningResultPage() {
             hotspots={stateData.hotspots}
             lesionMarkers={stateData.lesionMarkers}
             qualityScore={stateData.quality}
-            customImageUrl={screeningSession.uploadedImageUrl}
+            customImageUrl={stateData.imageUrl}
+            heatmapUrl={stateData.heatmapUrl}
           />
 
         </div>

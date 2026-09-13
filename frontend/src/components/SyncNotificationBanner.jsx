@@ -14,13 +14,17 @@ export default function SyncNotificationBanner() {
     clearOfflineQueue,
   } = useApp();
 
-  // Auto-dismiss success notifications after 6 seconds
+  // Auto-dismiss notifications: success after 5s, errors after 8s so they never permanently block the UI
   useEffect(() => {
-    if (lastSyncNotification && (lastSyncNotification.type === 'sync_success' || lastSyncNotification.type === 'online_success')) {
-      const timer = setTimeout(() => {
-        clearSyncNotification();
-      }, 6000);
-      return () => clearTimeout(timer);
+    if (lastSyncNotification) {
+      const isSuccess = lastSyncNotification.type === 'sync_success' || lastSyncNotification.type === 'online_success';
+      const isErr = lastSyncNotification.type === 'sync_error';
+      if (isSuccess || isErr) {
+        const timer = setTimeout(() => {
+          clearSyncNotification();
+        }, isSuccess ? 5000 : 8000);
+        return () => clearTimeout(timer);
+      }
     }
   }, [lastSyncNotification, clearSyncNotification]);
 

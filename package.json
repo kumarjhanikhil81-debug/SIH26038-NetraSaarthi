@@ -1,0 +1,17 @@
+{
+  "name": "netrasaarthi-platform",
+  "version": "1.0.0",
+  "description": "NetraSaarthi AI Clinical Suite - Complete Frontend & FastAPI Backend",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "backend": "backend\\.venv\\Scripts\\python.exe -m uvicorn backend.main:app --port 8000 --host 127.0.0.1 --reload",
+    "start": "npm --prefix frontend run dev"
+  },
+  "keywords": [
+    "netrasaarthi",
+    "fastapi",
+    "diabetic-retinopathy",
+    "pytorch"
+  ]
+}

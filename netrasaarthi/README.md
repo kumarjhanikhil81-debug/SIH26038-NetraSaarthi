@@ -84,4 +84,5 @@ netrasaarthi/frontend/
 ---
 
 ## ⚠️ Medical Decision Support Disclaimer
-NetraSaarthi is an AI-assisted screening and decision support tool designed for frontline triage. All automated classifications and Grad-CAM attention maps are intended solely to assist clinical judgment and require formal validation by a registered Ophthalmologist.
+NetraSaarthi is an AI-assisted screening and decision support to
+ol designed for frontline triage. All automated classifications and Grad-CAM attention maps are intended solely to assist clinical judgment and require formal validation by a registered Ophthalmologist.

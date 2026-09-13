@@ -5,6 +5,7 @@ import {
   RotateCw, 
   CheckCircle2, 
   AlertCircle, 
+  AlertTriangle,
   FileImage, 
   Sparkles, 
   ArrowRight,
@@ -14,6 +15,7 @@ import {
   HardDrive
 } from 'lucide-react';
 import { screeningApi } from '../services/api';
+import { evaluateClientFundusQuality } from '../utils/qualityCheck';
 
 // Configuration Constants
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
@@ -79,14 +81,13 @@ export default function FundusImageUploader({
   const [imageDimensions, setImageDimensions] = useState(null);
   
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState('idle'); // 'idle' | 'uploading' | 'success' | 'error'
+  const [uploadStatus, setUploadStatus] = useState('idle'); // 'idle' | 'uploading' | 'success' | 'invalid_image' | 'retake_required' | 'error'
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStageLabel, setUploadStageLabel] = useState('');
+  const [qualityResult, setQualityResult] = useState(null);
   
   const [errorMessage, setErrorMessage] = useState(null);
   const [simulateErrorToggle, setSimulateErrorToggle] = useState(false);
-
-  // Preserve object URLs across navigation to prevent blank screens in subsequent pages
 
   // Format bytes helper
   const formatBytes = (bytes, decimals = 2) => {
@@ -130,6 +131,7 @@ export default function FundusImageUploader({
   // Process and Upload File
   const processAndUploadFile = async (file) => {
     setErrorMessage(null);
+    setQualityResult(null);
 
     // Validate
     const validation = validateFile(file);
@@ -151,49 +153,73 @@ export default function FundusImageUploader({
     };
     img.src = previewUrl;
 
-    // Start mock upload
+    // Start upload & verification
     setUploadStatus('uploading');
-    setUploadProgress(5);
-    setUploadStageLabel('Initializing upload channel...');
+    setUploadProgress(20);
+    setUploadStageLabel('Inspecting image payload...');
 
     try {
-      const result = await mockUploadFundusApi(file, {
-        onProgress: (progress, label) => {
-          setUploadProgress(progress);
-          setUploadStageLabel(label);
-        },
-        shouldSimulateError: simulateErrorToggle
-      });
+      // Step 1: Simulated fast transmission channel
+      await new Promise(r => setTimeout(r, 200));
+      setUploadProgress(40);
+      setUploadStageLabel('Stage 1: Analyzing retinal fundus morphology...');
 
-      // Run morphology & clarity check
+      // Step 2: Two-stage quality gate check (Stage 1: Retina Morphology, Stage 2: Optical Clarity)
+      setUploadStageLabel('Analyzing retinal morphology & optical clarity...');
+      let qRes = await evaluateClientFundusQuality(file);
+
+      // Corroborate with backend quality check API if connected
       try {
-        const qRes = await screeningApi.checkQuality(file);
-        if (qRes && (qRes.quality_status === 'INVALID_IMAGE' || qRes.is_retina === false)) {
-          setUploadStatus('error');
-          setErrorMessage('No result as the image is not valid. The uploaded photograph is not a retinal fundus image.');
-          return;
+        const apiRes = await screeningApi.checkQuality(file);
+        if (apiRes && apiRes.quality_status) {
+          qRes = apiRes;
         }
       } catch (qErr) {
-        console.warn("Quality pre-check warning:", qErr);
+        console.warn("Backend quality check API unavailable, relying on client-side inspection:", qErr.message);
       }
 
+      setQualityResult(qRes);
+
+      // STAGE 1 GATE: Is it a retina?
+      if (qRes.quality_status === 'INVALID_IMAGE' || qRes.is_retina === false) {
+        setUploadStatus('invalid_image');
+        setUploadProgress(100);
+        setUploadStageLabel('Verification Failed: Not a retinal fundus image.');
+        const invalidMsg = qRes.quality_messages?.[0] || 'No result as the image is not valid. The uploaded photograph is not a retinal fundus image.';
+        setErrorMessage(invalidMsg);
+        if (onImageSelected) onImageSelected(null);
+        return;
+      }
+
+      // STAGE 2 GATE: Is the retina image clear?
+      if (qRes.quality_status === 'RETAKE_REQUIRED' || qRes.is_clear === false) {
+        setUploadStatus('retake_required');
+        setUploadProgress(100);
+        setUploadStageLabel('Clarity Warning: Retake required (Image not clear).');
+        const retakeMsg = qRes.quality_messages?.[0] || 'Retake the image, it is not clear. Motion blur, optical defocus, or dark illumination obscures microvascular details.';
+        setErrorMessage(retakeMsg);
+        if (onImageSelected) onImageSelected(null);
+        return;
+      }
+
+      // Passed both gates: Image is verified as retina AND verified clear!
       setUploadStatus('success');
       setUploadProgress(100);
-      setUploadStageLabel('Fundus image successfully verified and ready.');
+      setUploadStageLabel('Retina verified & clear. Ready for deep AI analysis and laser scanning.');
 
-      // Pass result and preview to parent
+      // Pass verified result and preview to parent
       if (onImageSelected) {
         onImageSelected({
           file,
           previewUrl,
-          apiResult: result,
+          qualityResult: qRes,
           dimensions: imageDimensions
         });
       }
     } catch (err) {
       console.error("Upload error:", err);
       setUploadStatus('error');
-      setErrorMessage(err.message || "Failed to upload fundus image. Please check your connection and retry.");
+      setErrorMessage(err.message || "Failed to process fundus image. Please check your connection and retry.");
     }
   };
 
@@ -382,8 +408,16 @@ export default function FundusImageUploader({
                 <div className="absolute bottom-3 px-3 py-1 rounded-full bg-black/80 text-white text-[10px] font-mono font-bold backdrop-blur-xs flex items-center gap-1.5">
                   {uploadStatus === 'uploading' && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
                   {uploadStatus === 'success' && <span className="w-2 h-2 rounded-full bg-emerald-400" />}
+                  {uploadStatus === 'invalid_image' && <span className="w-2 h-2 rounded-full bg-rose-400" />}
+                  {uploadStatus === 'retake_required' && <span className="w-2 h-2 rounded-full bg-amber-400" />}
                   {uploadStatus === 'error' && <span className="w-2 h-2 rounded-full bg-rose-400" />}
-                  <span>{uploadStatus === 'uploading' ? 'Uploading...' : uploadStatus === 'success' ? 'Validated' : 'Error'}</span>
+                  <span>
+                    {uploadStatus === 'uploading' ? 'Analyzing...' 
+                      : uploadStatus === 'success' ? 'Verified Retina' 
+                      : uploadStatus === 'invalid_image' ? 'Not a Retina' 
+                      : uploadStatus === 'retake_required' ? 'Retake Required' 
+                      : 'Error'}
+                  </span>
                 </div>
               </div>
 
@@ -403,11 +437,18 @@ export default function FundusImageUploader({
                   <span className="font-bold text-slate-700 flex items-center gap-1.5">
                     {uploadStatus === 'uploading' && <RotateCw className="w-3.5 h-3.5 text-teal-700 animate-spin" />}
                     {uploadStatus === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                    {uploadStatus === 'invalid_image' && <AlertCircle className="w-3.5 h-3.5 text-rose-600" />}
+                    {uploadStatus === 'retake_required' && <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />}
                     {uploadStatus === 'error' && <AlertCircle className="w-3.5 h-3.5 text-rose-600" />}
-                    <span>Upload Status: {uploadStatus.toUpperCase()}</span>
+                    <span>Status: {
+                      uploadStatus === 'success' ? 'VALIDATED' 
+                      : uploadStatus === 'invalid_image' ? 'NOT A RETINA' 
+                      : uploadStatus === 'retake_required' ? 'UNCLEAR IMAGE' 
+                      : uploadStatus.toUpperCase()
+                    }</span>
                   </span>
                   <span className={`font-mono font-bold text-xs ${
-                    uploadStatus === 'success' ? 'text-emerald-700' : uploadStatus === 'error' ? 'text-rose-700' : 'text-teal-800'
+                    uploadStatus === 'success' ? 'text-emerald-700' : uploadStatus === 'retake_required' ? 'text-amber-700' : 'text-rose-700'
                   }`}>
                     {uploadProgress}%
                   </span>
@@ -417,8 +458,10 @@ export default function FundusImageUploader({
                 <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden p-0.5 border border-slate-300">
                   <div 
                     className={`h-full rounded-full transition-all duration-200 ${
-                      uploadStatus === 'error' 
+                      uploadStatus === 'error' || uploadStatus === 'invalid_image'
                         ? 'bg-rose-500' 
+                        : uploadStatus === 'retake_required'
+                        ? 'bg-amber-500'
                         : uploadStatus === 'success' 
                         ? 'bg-gradient-to-r from-teal-600 to-emerald-500' 
                         : 'bg-gradient-to-r from-teal-500 to-teal-700'
@@ -435,16 +478,66 @@ export default function FundusImageUploader({
               {/* Technical Specifications Summary */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
-                  <span className="text-slate-500 block text-[10px] uppercase font-bold">MIME Format</span>
-                  <span className="font-mono font-bold text-slate-800">{selectedFile?.type || 'image/jpeg'}</span>
+                  <span className="text-slate-500 block text-[10px] uppercase font-bold">Retina Check</span>
+                  <span className={`font-mono font-bold ${
+                    qualityResult?.is_retina ? 'text-emerald-700' : qualityResult ? 'text-rose-700' : 'text-slate-700'
+                  }`}>
+                    {qualityResult?.is_retina ? 'Verified Fundus' : qualityResult ? 'Non-Retinal Image' : 'Checking...'}
+                  </span>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
                   <span className="text-slate-500 block text-[10px] uppercase font-bold">Optical Quality</span>
-                  <span className="font-mono font-bold text-emerald-700">94% (Acceptable)</span>
+                  <span className={`font-mono font-bold ${
+                    qualityResult?.quality_status === 'GOOD' ? 'text-emerald-700' : qualityResult?.quality_status === 'RETAKE_REQUIRED' ? 'text-amber-700' : 'text-slate-700'
+                  }`}>
+                    {qualityResult?.quality_score !== undefined ? `${qualityResult.quality_score}% (${qualityResult.quality_status})` : '94% (Evaluating)'}
+                  </span>
                 </div>
               </div>
 
-              {/* Retry button if upload failed */}
+              {/* State A: Invalid Image Rejection Banner */}
+              {uploadStatus === 'invalid_image' && (
+                <div className="p-4 rounded-2xl bg-rose-50 border border-rose-300 text-rose-950 space-y-2 animate-shake">
+                  <div className="flex items-center gap-2 font-bold text-sm text-rose-900">
+                    <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+                    <span>No result as the image is not valid</span>
+                  </div>
+                  <p className="text-xs text-rose-800 font-medium leading-relaxed">
+                    The uploaded photograph is not a retinal fundus image (lacks optic disc, retinal vasculature, or macular anatomy). Automated diabetic retinopathy diagnosis cannot be performed on non-retinal photographs.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleRemoveImage}
+                    className="mt-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-2 transition-all shadow-xs cursor-pointer"
+                  >
+                    <RotateCw className="w-4 h-4" />
+                    <span>Re-upload Retina Photograph</span>
+                  </button>
+                </div>
+              )}
+
+              {/* State B: Retake Required Banner */}
+              {uploadStatus === 'retake_required' && (
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 space-y-2 animate-fade-in">
+                  <div className="flex items-center gap-2 font-bold text-sm text-amber-900">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+                    <span>Retake the image, it is not clear</span>
+                  </div>
+                  <p className="text-xs text-amber-800 font-medium leading-relaxed">
+                    {errorMessage || "Image clarity is insufficient for automated diagnostic analysis. Motion blur, optical defocus, or dark illumination obscures microvascular details."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleRemoveImage}
+                    className="mt-2 px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-2 transition-all shadow-xs cursor-pointer"
+                  >
+                    <RotateCw className="w-4 h-4" />
+                    <span>Retake / Re-upload Clear Image</span>
+                  </button>
+                </div>
+              )}
+
+              {/* State C: Generic Error Retry */}
               {uploadStatus === 'error' && (
                 <button
                   type="button"
@@ -460,20 +553,20 @@ export default function FundusImageUploader({
 
           </div>
 
-          {/* Primary "Start Screening" Action Button */}
+          {/* Primary "Start Screening" Action Button (Only enabled when image is valid and clear) */}
           {uploadStatus === 'success' && (
             <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 animate-fade-in">
               <div className="text-xs text-slate-500 font-medium">
-                Image verified. Ready to initiate explainable convolutional feature extraction.
+                Retinal fundus image verified and sharp. Ready to initiate deep AI microvascular feature extraction.
               </div>
 
               <button
                 type="button"
                 onClick={() => onStartScreening && onStartScreening(imagePreviewUrl, selectedFile)}
-                className="w-full sm:w-auto btn-primary-large text-base py-3.5 px-8 gap-2.5"
+                className="w-full sm:w-auto btn-primary-large text-base py-3.5 px-8 gap-2.5 shadow-md hover:scale-[1.02] transition-transform"
               >
                 <Sparkles className="w-5 h-5 text-amber-300 animate-pulse" />
-                <span>Start Screening</span>
+                <span>Start Deep AI Screening</span>
                 <ArrowRight className="w-5 h-5" />
               </button>
             </div>

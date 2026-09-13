@@ -6,5 +6,6 @@
   ],
   "python.analysis.diagnosticSeverityOverrides": {
     "reportMissingImports": "none"
-  }
+  },
+  "json.schemaDownload.enable": false
 }

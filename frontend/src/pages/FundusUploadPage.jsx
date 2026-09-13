@@ -19,6 +19,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { CLINICAL_SAMPLE_CASES } from '../data/mockData';
 import { screeningApi } from '../services/api';
+import { evaluateClientFundusQuality } from '../utils/qualityCheck';
 import RetinalVisualizer from '../components/RetinalVisualizer';
 import VoiceGuide from '../components/VoiceGuide';
 import MedicalDisclaimer from '../components/MedicalDisclaimer';
@@ -147,17 +148,23 @@ export default function FundusUploadPage() {
         setIsAnalyzingCameraImage(true);
         setCameraQualityResult(null);
         try {
-          const res = await screeningApi.checkQuality(file);
-          setCameraQualityResult(res);
+          // Instantaneous client-side evaluation first
+          const localEval = await evaluateClientFundusQuality(file);
+          setCameraQualityResult(localEval);
+
+          // Corroborate with backend quality check API if accessible
+          try {
+            const apiRes = await screeningApi.checkQuality(file);
+            if (apiRes && apiRes.quality_status) {
+              setCameraQualityResult(apiRes);
+            }
+          } catch (apiErr) {
+            console.warn("Backend camera quality API error:", apiErr);
+          }
         } catch (err) {
           console.warn("Camera frame quality check error:", err);
-          // Fallback to client-side optimistic evaluation
-          setCameraQualityResult({
-            quality_status: 'GOOD',
-            is_retina: true,
-            is_clear: true,
-            quality_score: 92
-          });
+          const localEval = await evaluateClientFundusQuality(file);
+          setCameraQualityResult(localEval);
         } finally {
           setIsAnalyzingCameraImage(false);
         }
@@ -194,13 +201,26 @@ export default function FundusUploadPage() {
     if (activeTab === 'samples') {
       const sample = selectedCase || CLINICAL_SAMPLE_CASES[0];
       setScreeningImageAndCase(eye, sample, null, null);
-      navigate('/ai-analysis');
+      navigate('/ai-analysis', { state: { eye, caseData: sample, uploadedFile: null, uploadedImageUrl: null } });
       return;
     }
+
+    // Safety Gate: Block start screening if camera capture is invalid or unclear
+    if (activeTab === 'camera') {
+      if (cameraQualityResult?.quality_status === 'INVALID_IMAGE' || cameraQualityResult?.is_retina === false) {
+        alert("Cannot start screening: No result as the image is not valid. The captured photograph is not a retinal fundus image. Please retake the photo.");
+        return;
+      }
+      if (cameraQualityResult?.quality_status === 'RETAKE_REQUIRED' || cameraQualityResult?.is_clear === false) {
+        alert("Cannot start screening: Retake the image, it is not clear. Please retake the photo with steady focus and lighting.");
+        return;
+      }
+    }
+
     const file = customFile || uploadedImageObject?.file || null;
     const imageUrl = uploadedImageObject?.dataUrl || customPreviewUrl || uploadedImageObject?.previewUrl || null;
     setScreeningImageAndCase(eye, null, imageUrl, file);
-    navigate('/ai-analysis');
+    navigate('/ai-analysis', { state: { eye, caseData: null, uploadedFile: file, uploadedImageUrl: imageUrl } });
   };
 
   return (
@@ -502,16 +522,24 @@ export default function FundusUploadPage() {
 
                 <button
                   type="button"
-                  disabled={isAnalyzingCameraImage || cameraQualityResult?.quality_status === 'INVALID_IMAGE' || cameraQualityResult?.is_retina === false}
+                  disabled={
+                    isAnalyzingCameraImage || 
+                    cameraQualityResult?.quality_status === 'INVALID_IMAGE' || 
+                    cameraQualityResult?.is_retina === false ||
+                    cameraQualityResult?.quality_status === 'RETAKE_REQUIRED' ||
+                    cameraQualityResult?.is_clear === false
+                  }
                   onClick={() => handleStartScreening(capturedCameraImage.dataUrl, capturedCameraImage.file)}
                   className={`btn-primary-large text-sm py-3 px-8 gap-2 shadow-md ${
-                    (cameraQualityResult?.quality_status === 'INVALID_IMAGE' || cameraQualityResult?.is_retina === false)
+                    (cameraQualityResult?.quality_status === 'INVALID_IMAGE' || cameraQualityResult?.is_retina === false || cameraQualityResult?.quality_status === 'RETAKE_REQUIRED' || cameraQualityResult?.is_clear === false)
                       ? 'opacity-40 cursor-not-allowed bg-slate-400 hover:bg-slate-400'
                       : ''
                   }`}
                   title={
                     cameraQualityResult?.quality_status === 'INVALID_IMAGE' 
                       ? 'Cannot screen non-retina image' 
+                      : cameraQualityResult?.quality_status === 'RETAKE_REQUIRED'
+                      ? 'Cannot screen unclear image (retake required)'
                       : 'Proceed to AI diagnostic analysis'
                   }
                 >
